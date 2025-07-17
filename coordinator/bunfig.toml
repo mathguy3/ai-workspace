@@ -1,0 +1,6 @@
+[install]
+# Use exact versions for reproducible builds
+exact = true
+
+[install.scopes]
+# Configure npm scopes if needed 
