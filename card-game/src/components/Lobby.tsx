@@ -1,49 +1,58 @@
 import { useState } from 'react';
-import { createRoom, joinRoom, subscribeRoom, generateRoomCode, getPlayerId } from '../multiplayer/room';
-import { SpeedState } from '../games/speed';
+import { hostRoom, joinRoom, generateRoomCode, displayCode, getPlayerId, GameRoom } from '../multiplayer/peer-room';
 
 interface Props {
-  onStart: (roomCode: string, playerIndex: 0 | 1, state: SpeedState) => void;
+  onStart: (room: GameRoom, playerIndex: 0 | 1) => void;
   onBack: () => void;
 }
 
 export function Lobby({ onStart, onBack }: Props) {
   const [phase, setPhase] = useState<'home' | 'waiting' | 'joining'>('home');
-  const [roomCode, setRoomCode] = useState('');
+  const [code, setCode] = useState('');
   const [inputCode, setInputCode] = useState('');
   const [error, setError] = useState('');
-  const playerId = getPlayerId();
 
-  async function handleCreate() {
-    const code = generateRoomCode();
-    setRoomCode(code);
+  function handleCreate() {
+    const fullCode = generateRoomCode();
+    setCode(displayCode(fullCode));
     setPhase('waiting');
-    await createRoom(code, playerId);
-    subscribeRoom(code, ({ gameState, playerIds }) => {
-      if (gameState && playerIds[1]) onStart(code, 0, gameState);
-    });
+    setError('');
+
+    // roomRef allows the callback to reference `room` before it's used
+    let room: GameRoom;
+    room = hostRoom(
+      fullCode,
+      getPlayerId(),
+      () => onStart(room, 0),
+      e => { setError(e); setPhase('home'); }
+    );
   }
 
-  async function handleJoin() {
-    const code = inputCode.trim().toUpperCase();
-    if (code.length < 4) return;
+  function handleJoin() {
+    const trimmed = inputCode.trim().toUpperCase();
+    if (trimmed.length < 4) return;
     setError('');
     setPhase('joining');
-    try {
-      await joinRoom(code, playerId);
-      subscribeRoom(code, ({ gameState }) => {
-        if (gameState) onStart(code, 1, gameState);
-      });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to join');
-      setPhase('home');
-    }
+
+    const fullCode = 'spd-' + trimmed;
+    const room = joinRoom(
+      fullCode,
+      getPlayerId(),
+      () => { /* connected — waiting for host to send state */ },
+      e => { setError(e); setPhase('home'); }
+    );
+
+    // Transition to game on first state received from host
+    const unsub = room.subscribe(() => {
+      unsub();
+      onStart(room, 1);
+    });
   }
 
   if (phase === 'waiting') return (
     <div className="lobby">
       <h2>Waiting for opponent…</h2>
-      <div className="room-code">{roomCode}</div>
+      <div className="room-code">{code}</div>
       <p className="lobby-hint">Share this code with your friend</p>
     </div>
   );
@@ -65,7 +74,7 @@ export function Lobby({ onStart, onBack }: Props) {
           onKeyDown={e => e.key === 'Enter' && handleJoin()}
         />
         <button className="lobby-btn" onClick={handleJoin} disabled={phase === 'joining'}>
-          Join
+          {phase === 'joining' ? 'Joining…' : 'Join'}
         </button>
       </div>
       {error && <p className="lobby-error">{error}</p>}

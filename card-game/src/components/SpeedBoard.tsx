@@ -1,28 +1,14 @@
 import { useEffect, useState } from 'react';
 import { SpeedState, getRankLabel, getSuitSymbol, getCardColor } from '../games/speed';
-import { subscribeRoom, playCard, voteSpeed } from '../multiplayer/room';
+import { GameRoom } from '../multiplayer/peer-room';
 
-interface Props {
-  roomCode: string;
-  playerId: string;
-  playerIndex: 0 | 1;
-  initialState: SpeedState;
-}
-
-function SpeedCard({
-  cardId, faceUp, selected, onClick, small,
-}: {
-  cardId: string; faceUp: boolean; selected?: boolean; onClick?: () => void; small?: boolean;
+function SpeedCard({ cardId, faceUp, selected, onClick }: {
+  cardId: string; faceUp: boolean; selected?: boolean; onClick?: () => void;
 }) {
-  if (!faceUp) return (
-    <div className={`card card--face-down ${small ? 'card--small' : ''}`} onClick={onClick} />
-  );
+  if (!faceUp) return <div className="card card--face-down card--small" onClick={onClick} />;
   const color = getCardColor(cardId);
   return (
-    <div
-      className={`card card--face-up ${small ? 'card--small' : ''} ${selected ? 'card--selected' : ''}`}
-      onClick={onClick}
-    >
+    <div className={`card card--face-up card--small ${selected ? 'card--selected' : ''}`} onClick={onClick}>
       <span className={`card__corner card__corner--tl card__color--${color}`}>
         <span className="card__rank">{getRankLabel(cardId)}</span>
         <span className="card__suit-small">{getSuitSymbol(cardId)}</span>
@@ -36,44 +22,41 @@ function SpeedCard({
   );
 }
 
-export function SpeedBoard({ roomCode, playerId, playerIndex, initialState }: Props) {
-  const [state, setState] = useState<SpeedState>(initialState);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+interface Props {
+  room: GameRoom;
+  playerIndex: 0 | 1;
+}
 
-  const opp = (1 - playerIndex) as 0 | 1;
+export function SpeedBoard({ room, playerIndex }: Props) {
+  const [state, setState] = useState<SpeedState | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+
   const me = playerIndex;
+  const opp = (1 - playerIndex) as 0 | 1;
 
   useEffect(() => {
-    const unsub = subscribeRoom(roomCode, ({ gameState }) => {
-      if (gameState) setState(gameState);
-    });
-    return unsub;
-  }, [roomCode]);
+    return room.subscribe(setState);
+  }, [room]);
 
-  async function handleCenterClick(pile: 0 | 1) {
-    if (!selected || busy || state.status !== 'playing') return;
-    setBusy(true);
-    try {
-      await playCard(roomCode, playerId, selected, pile);
-      setSelected(null);
-    } catch { /* invalid move, ignore */ }
-    setBusy(false);
+  function handleCardClick(cardId: string) {
+    setSelected(prev => prev === cardId ? null : cardId);
   }
 
-  async function handleSpeed() {
-    if (busy || state.status !== 'playing') return;
-    setBusy(true);
-    await voteSpeed(roomCode, playerId);
-    setBusy(false);
+  function handlePileClick(pile: 0 | 1) {
+    if (!selected || !state) return;
+    room.sendMove(selected, pile);
+    setSelected(null);
   }
 
-  const myHand = state.hands[me];
-  const oppHand = state.hands[opp];
-  const myStock = state.stocks[me].length;
-  const oppStock = state.stocks[opp].length;
-  const myVote = state.speedVotes[me];
-  const oppVote = state.speedVotes[opp];
+  function handleSpeed() {
+    room.voteSpeed();
+  }
+
+  if (!state) return (
+    <div className="lobby">
+      <p style={{ color: 'rgba(255,255,255,0.7)' }}>Connecting…</p>
+    </div>
+  );
 
   if (state.status === 'finished') {
     const iWon = state.winner === me;
@@ -85,38 +68,36 @@ export function SpeedBoard({ roomCode, playerId, playerIndex, initialState }: Pr
     );
   }
 
+  const myHand = state.hands[me];
+  const oppHand = state.hands[opp];
+  const myVote = state.speedVotes[me];
+  const oppVote = state.speedVotes[opp];
+
   return (
     <div className="speed-board">
-      {/* Opponent area */}
+      {/* Opponent */}
       <div className="speed-player speed-player--opp">
         <div className="speed-stock">
           <div className="card card--face-down card--small" />
-          <span className="speed-count">{oppStock}</span>
+          <span className="speed-count">{state.stocks[opp].length}</span>
         </div>
         <div className="speed-hand">
-          {oppHand.map((id, i) => (
-            <SpeedCard key={i} cardId={id} faceUp={false} small />
-          ))}
-          {Array.from({ length: 5 - oppHand.length }).map((_, i) => (
-            <div key={`empty-${i}`} className="card-placeholder" />
-          ))}
+          {oppHand.map((id, i) => <SpeedCard key={i} cardId={id} faceUp={false} />)}
+          {Array.from({ length: 5 - oppHand.length }).map((_, i) => <div key={i} className="card-placeholder" />)}
         </div>
         {oppVote && <div className="speed-vote-indicator">SPEED!</div>}
       </div>
 
-      {/* Center area */}
+      {/* Center piles */}
       <div className="speed-center">
-        {[0, 1].map(pile => {
-          const topCard = state.center[pile as 0|1].at(-1);
+        {([0, 1] as const).map(pile => {
+          const top = state.center[pile].at(-1);
           return (
-            <div
-              key={pile}
-              className={`speed-pile ${selected ? 'speed-pile--active' : ''}`}
-              onClick={() => handleCenterClick(pile as 0|1)}
-            >
-              {topCard
-                ? <SpeedCard cardId={topCard} faceUp />
-                : <div className="zone__empty-slot" />}
+            <div key={pile} className={`speed-pile ${selected ? 'speed-pile--active' : ''}`}
+              onClick={() => handlePileClick(pile)}>
+              {top
+                ? <SpeedCard cardId={top} faceUp />
+                : <div className="zone__empty-slot" style={{ width: 72, height: 100 }} />}
             </div>
           );
         })}
@@ -124,39 +105,29 @@ export function SpeedBoard({ roomCode, playerId, playerIndex, initialState }: Pr
 
       {/* Speed button */}
       <div className="speed-actions">
-        <button
-          className={`speed-btn ${myVote ? 'speed-btn--voted' : ''}`}
-          onClick={handleSpeed}
-          disabled={busy}
-        >
+        <button className={`speed-btn ${myVote ? 'speed-btn--voted' : ''}`} onClick={handleSpeed}>
           {myVote ? 'Waiting…' : 'SPEED!'}
         </button>
       </div>
 
-      {/* My area */}
+      {/* My hand */}
       <div className="speed-player speed-player--me">
         <div className="speed-stock">
           <div className="card card--face-down card--small" />
-          <span className="speed-count">{myStock}</span>
+          <span className="speed-count">{state.stocks[me].length}</span>
         </div>
         <div className="speed-hand">
           {myHand.map(id => (
-            <SpeedCard
-              key={id}
-              cardId={id}
-              faceUp
-              selected={selected === id}
-              onClick={() => setSelected(selected === id ? null : id)}
-            />
+            <SpeedCard key={id} cardId={id} faceUp selected={selected === id} onClick={() => handleCardClick(id)} />
           ))}
-          {Array.from({ length: 5 - myHand.length }).map((_, i) => (
-            <div key={`empty-${i}`} className="card-placeholder" />
-          ))}
+          {Array.from({ length: 5 - myHand.length }).map((_, i) => <div key={i} className="card-placeholder" />)}
         </div>
       </div>
 
       {selected && (
-        <div className="speed-hint">Tap a center pile to play {getRankLabel(selected)}{getSuitSymbol(selected)}</div>
+        <div className="speed-hint">
+          Tap a center pile to play {getRankLabel(selected)}{getSuitSymbol(selected)}
+        </div>
       )}
     </div>
   );
